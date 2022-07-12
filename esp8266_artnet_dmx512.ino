@@ -61,11 +61,11 @@ struct {
 
 // keep track of the timing of the function calls
 long tic_loop = 0;
-long tic_fps = 0;
+long tic_stats = 0;
 long tic_packet = 0;
 long tic_web = 0;
-float pps_in;
-float fps_out;
+float pps;
+float fps;
 
 long loopCount = 0;
 boolean connectedToAccessPoint = false;
@@ -219,7 +219,7 @@ void setup() {
   // initialize all timers
   tic_loop   = millis();
   tic_packet = millis();
-  tic_fps    = millis();
+  tic_stats    = millis();
   tic_web    = 0;
 
   Serial.println("Setup complete");
@@ -266,14 +266,17 @@ void loop() {
     allBlack();
   }
 
-  if (connectedToAccessPoint) {
+  greenOff();
+  blueOff();
+  if (strobeInterval>0) { 
     blueOn();
-    greenOff();
+    greenOn();
+  } else if (connectedToAccessPoint) {
+    blueOn();
   } else {
     greenOn();
-    blueOff();
   }
-  
+
   // handle servers only when there is no DMX data
   if (!isReceivingPackets) {        
 
@@ -296,7 +299,7 @@ void loop() {
   artnet.read();
   if (packetReceived) {    
     redOn();
-    redOffTime = now+5; // flash red for 10 ms
+    redOffTime = now+3; // flash red for 10 ms
   }
 
   // this section gets executed at a maximum rate of around 40Hz
@@ -342,11 +345,9 @@ void loop() {
     }
   }
 
-#ifdef ENABLE_STATS
   if (packetReceived) {    
     printStats(loopCount);
   }
-#endif
   
   if (debugTiming) {
     long after = millis();
@@ -517,8 +518,8 @@ void setupServer() {
     root["uptime"]  = long(millis() / 1000);
     root["packets"] = totalPacketsReceived;
     root["frames"]  = totalFramesSent;
-    root["pps_in"]  = pps_in;
-    root["fps_out"] = fps_out;
+    root["pps"] = pps;
+    root["fps"] = fps;
     String str;
     serializeJson(root, str);
     server.send(200, "application/json", str);
@@ -559,49 +560,50 @@ void setupServer() {
 
 void printStats(long loopCount) {
   long now = millis();
-  long delta = now - tic_fps;
-  // every 5 seconds
+  long delta = now - tic_stats;
+  // don't estimate the FPS too frequently. every 10 seconds
   if (delta > 10000) {
+    pps  = 1000 * packetsReceived / delta;
+    fps = 1000 * framesSent / delta;
+    tic_stats = millis();
+#ifdef ENABLE_STATS
     Serial.print("now=");
     Serial.print(now);
     Serial.print(",delta=");
     Serial.print(delta);
     Serial.print(",loopCount=");
     Serial.print(loopCount);
-    Serial.print(",totalFramesSent=");
-    Serial.print(totalFramesSent);
-    Serial.print(",framesSent=");
-    Serial.print(framesSent);
     Serial.print(",totalPacketsReceived=");
     Serial.print(totalPacketsReceived);
+    Serial.print(",totalFramesSent=");
+    Serial.print(totalFramesSent);
     Serial.print(",packetsReceived=");
     Serial.print(packetsReceived);
+    Serial.print(",framesSent=");
+    Serial.print(framesSent);
+    Serial.print(",pps=");
+    Serial.print(pps);
+    Serial.print(",fps=");
+    Serial.print(fps);
     Serial.print(",strobeInterval=");
     Serial.print(strobeInterval);
-    Serial.print(",packetReceived=");
-    Serial.print(packetReceived);
-    // don't estimate the FPS too frequently
-    pps_in  = 1000 * packetsReceived / delta;
-    fps_out = 1000 * framesSent / delta;
-    tic_fps = millis();
+    Serial.println();
+#endif    
     packetsReceived = 0;
     framesSent = 0;
-    Serial.print(",pps_in=");
-    Serial.print(pps_in);
-    Serial.print(",fps_out=");
-    Serial.print(fps_out);
-    Serial.println();
   }
 } 
 
 #ifdef COMMON_ANODE
 #define ON  LOW
 #define OFF HIGH
-#define DIMMED 4095-100
+#define DIMMED_G 4095-10
+#define DIMMED_B 4095-100
 #else 
 #define ON  HIGH
 #define OFF LOW
-#define DIMMED 100
+#define DIMMED_G 10
+#define DIMMED_B 100
 #endif
 
 void singleWhite() {
@@ -612,8 +614,8 @@ void singleWhite() {
 
 void singleRed() {
   digitalWrite(LED_R, ON);
-  digitalWrite(LED_G, LOW);
-  digitalWrite(LED_B, LOW);
+  digitalWrite(LED_G, OFF);
+  digitalWrite(LED_B, OFF);
 }
 
 void redOn() {
@@ -621,11 +623,11 @@ void redOn() {
 }
 
 void greenOn() {
-  analogWrite(LED_G, DIMMED);
+  analogWrite(LED_G, DIMMED_G);
 }
 
 void blueOn() {
-  analogWrite(LED_B, DIMMED);
+  analogWrite(LED_B, DIMMED_B);
 }
 
 void redOff() {
