@@ -19,21 +19,32 @@
 #include "send_break.h"
 
 #define MIN(x,y) (x<y ? x : y)
+
+#define ENABLE_OTA
 #define ENABLE_MDNS
 #define ENABLE_WEBINTERFACE
-// #define COMMON_ANODE
-
-Config config;
-ESP8266WebServer server(80);
-const char* host = "ARTNET_APdlV";
-const char* version = __DATE__ " / " __TIME__;
+//#define ENABLE_STATS
 
 #define LED_B 16  // GPIO16/D0
 #define LED_G 5   // GPIO05/D1
 #define LED_R 4   // GPIO04/D2
 
-// Artnet settings
-ArtnetWifi artnet;
+//#define COMMON_ANODE
+#ifdef COMMON_ANODE
+#define ON  LOW
+#define OFF HIGH
+#define DIMMED 4095-100
+#else 
+#define ON  HIGH
+#define OFF LOW
+#define DIMMED 100
+#endif
+
+
+Config config;
+const char* host = "😎ArtNet😍";
+const char* version = __DATE__ " / " __TIME__;
+
 unsigned long totalFramesReceived = 0;
 unsigned long framesReceived = 0;
 
@@ -49,87 +60,29 @@ struct {
 } global;
 
 // keep track of the timing of the function calls
-long tic_loop = 0, tic_fps = 0, tic_packet = 0, tic_web = 0;
+long tic_loop = 0;
+long tic_fps = 0;
+long tic_packet = 0;
+long tic_web = 0;
+float fps_in;
+float fps_out;
 
-byte strobeInterval = 0;
+long loopCount = 0;
+boolean connectedToAccessPoint = false;
 
-boolean packetReceived = false;
-float fps_in, fps_out;
+long lastLoop = millis();
+long redOffTime = 0;
 
-void printStats() {
-  long delta = millis() - tic_fps;
-  // every 5 seconds
-  if (delta > 5000) {
-    Serial.print("millis=");
-    Serial.print(delta);
-    Serial.print(",totalFramesSent=");
-    Serial.print(totalFramesSent);
-    Serial.print(",framesSent=");
-    Serial.print(framesSent);
-    Serial.print(",framesReceived=");
-    Serial.print(framesReceived);
-    Serial.print(",totalFramesReceived=");
-    Serial.print(totalFramesReceived);
-    Serial.print(",strobeInterval=");
-    Serial.print(strobeInterval);
-    // don't estimate the FPS too frequently
-    fps_in  = 1000 * framesReceived / delta;
-    fps_out = 1000 * framesSent / delta;
-    tic_fps = millis();
-    framesReceived = 0;
-    framesSent = 0;
-    Serial.print(",fps_in=");
-    Serial.print(fps_in);
-    Serial.print(",fps_out=");
-    Serial.print(fps_out);
-    Serial.println();
-  }
-} 
+bool debugTiming = false;
+bool wasReceivingPackets = false;
 
-//this will be called for each UDP packet received
-void onDmxPacket(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t * data) {
+volatile byte strobeInterval = 0;
+volatile boolean packetReceived = false;
+volatile long lastPacketReceived = 0;
 
-  packetReceived = true;
-  totalFramesReceived++;
-  framesReceived++;
-
-  if (universe == config.universe) {
-    // copy the data from the UDP packet over to the global universe buffer
-    global.universe = universe;
-    global.sequence = sequence;
-    if (length < 512)
-      global.length = length;
-    for (int i = 0; i < global.length; i++) {
-      global.data[i] = data[i];
-    }
-    strobeInterval = data[200 - 1];
-  }
-
-  /*
-    Serial.print("universe = ");
-    Serial.print(universe);
-    Serial.print(", sequence = ");
-    Serial.print(sequence);
-    Serial.print(", data[40] = ");
-    Serial.println(data[40]);
-  */
-  //greenOff();
-} // onDmxpacket
-
-void sendInitial() {
-  for (int n = 0; n < 3; n++) {
-    sendBreak();
-    Serial1.write(0); // Start-Byte
-    // send out the value of the selected channels (up to 256)
-    for (int i = 0; i < 256; i++) {
-      Serial1.write(global.data[i]);
-    }
-    delay(1);
-  }
-}
-
+ESP8266WebServer server(80);
+ArtnetWifi artnet;
 WiFiManager wifiManager;
-
 
 void setup() {
   Serial1.begin(250000, SERIAL_8N2);
@@ -137,7 +90,7 @@ void setup() {
   while (!Serial) {
     ;
   }
-  Serial.println("setup starting");
+  Serial.println("Starting setup");
   pinMode(LED_R, OUTPUT);
   pinMode(LED_G, OUTPUT);
   pinMode(LED_B, OUTPUT);
@@ -155,7 +108,7 @@ void setup() {
   int G = 190;
   int B = 45;
 
-  // defaults for 8 ceiling spots (warm white) at address 1
+  // Set defaults for 8 ceiling spots (warm white) at address 1
   for (int spot = -1; spot < 8; spot++) {
 
     singleWhite();  
@@ -163,7 +116,7 @@ void setup() {
     allBlack();  
     delay(125);
 
-    // ceiling spots behind bar at address 48
+    // A songle ceiling spots behind bar at has address 48
     int adr = spot < 0 ? 48 : 3 * spot;
     global.data[adr + 0] = R; // r
     global.data[adr + 1] = G; // g
@@ -173,79 +126,298 @@ void setup() {
   }
   allBlack();
 
-  Serial.println("starting SPIFFS");
+  Serial.println("Initiating configuration");
   SPIFFS.begin();
-
-  Serial.println("initial config");
   initialConfig();
-  Serial.print("delay: ");
-  Serial.println(config.delay);
+  
+  Serial.print("Default FPS delay is ");
+  Serial.print(config.delay);
+  Serial.println(" ms");
 
+  Serial.println("Loading initial configuration");
   if (loadConfig()) {
+    Serial.println("Successfully loaded initial configuration");
+    Serial.print("Configured FPS delay is ");
+    Serial.println(" ms");
     singleYellow();
-  }
-  else {
+  } else {
+    Serial.println("Failed to load initial config");
     singleRed();
-  }
-  delay(500);
+  }  
+  delay(250);
   allBlack();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    singleRed();
+  if (WiFi.status() == WL_CONNECTED) {
+    blueOn();
   } else {
-    singleGreen();
+    greenOn();
   }
+  delay(250);
+  allBlack();
 
-  int CONFIG_TIMEOUT = 10;
+  int CONFIG_TIMEOUT = 24 * 3600; // 1 day
   
   Serial.println("starting WiFiManager");
   wifiManager.setDarkMode(true);
   wifiManager.setConfigPortalBlocking(false);
   wifiManager.setConfigPortalTimeout(CONFIG_TIMEOUT);
-
-  //if this is set, it will exit after config, even if connection is unsuccessful.
+  // if this is set, it will exit after config, even if connection is unsuccessful.
   // TODO: what does that mean?
   // wifiManager.setBreakAfterConfig(true);
     
-  // wifiManager.resetSettings();
-  WiFi.hostname(host);
-    
-  wifiManager.setAPStaticIPConfig(IPAddress(192, 168, 1, 1), IPAddress(192, 168, 1, 1), IPAddress(255, 255, 255, 0));
+  WiFi.hostname(host);    
+  wifiManager.setAPStaticIPConfig(IPAddress(192, 168, 111, 1), IPAddress(192, 168, 111, 1), IPAddress(255, 255, 255, 0));
   wifiManager.autoConnect(host);       
   
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("connected");    
-    singleGreen();
-  } 
-  else {
-    Serial.println("NOT connected");    
-    singleRed();
+    blueOn();
+  } else {
+    greenOn();
   }
 
-  //if (WiFi.status() == WL_CONNECTED) 
-  {
-    ArduinoOTA.setHostname("ArtnetDmxOTA");
-    ArduinoOTA.begin();
-  }
-
+#ifdef ENABLE_OTA
+  Serial.println("Starting OTA");
+  ArduinoOTA.setHostname("ArtnetDmx_Ota");
+  ArduinoOTA.setPassword("test99");
+  ArduinoOTA.onStart([]() { allBlack(); digitalWrite(LED_B, ON); } );
+  ArduinoOTA.onError([](ota_error_t error) { 
+      Serial.printf("Error[%u]: ", error); 
+      allBlack(); 
+      digitalWrite(LED_R, ON); 
+    } 
+  );
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    analogWrite(LED_B, 4096-(20*millis())%4096);
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onEnd([]()   { 
+    allBlack(); 
+    digitalWrite(LED_G, ON); 
+    delay(500);
+    allBlack(); 
+  });
+  ArduinoOTA.begin();
+  Serial.println("OTA started");
+#endif
 
 #ifdef ENABLE_WEBINTERFACE
+  setupServer();
+#endif
+
+  // announce the hostname and web server through zeroconf
+#ifdef ENABLE_MDNS
+  MDNS.begin(host);
+  MDNS.addService("http", "tcp", 80);
+#endif
+
+  Serial.println("Starting ArtNet");
+  artnet.begin();
+  artnet.setArtDmxCallback(onDmxPacket);
+  Serial.println("ArtNet started");
+
+  // initialize all timers
+  tic_loop   = millis();
+  tic_packet = millis();
+  tic_fps    = millis();
+  tic_web    = 0;
+
+  Serial.println("Setup complete");
+} // setup
+
+
+void loop() {
+
+  long now = millis();
+  loopCount++;
+
+  if (debugTiming) {
+    long loopDelta = now-lastLoop;
+    if (loopDelta>8) {
+      Serial.print("loopDelta=");
+      Serial.println(loopDelta);
+    }
+  }
+  lastLoop = now;
+
+  if (redOffTime>0 && now>=redOffTime) {
+    redOff();
+    redOffTime=0;
+  }
+  
+  boolean isReceivingPackets = false;  
+  if (lastPacketReceived>0) {
+    long delta = now-lastPacketReceived;
+    if (delta < 1*1000) {
+      isReceivingPackets = true;
+    }
+  } 
+
+  if (isReceivingPackets && !wasReceivingPackets) {
+    singleWhite();
+    Serial.println("DMX packet stream starts");
+    delay(50);
+    allBlack();
+  }
+  else if (!isReceivingPackets && wasReceivingPackets) {
+    singleWhite();
+    Serial.println("DMX packet stream stopped");
+    delay(50);
+    allBlack();
+  }
+
+  if (connectedToAccessPoint) {
+    blueOn();
+    greenOff();
+  } else {
+    greenOn();
+    blueOff();
+  }
+  
+  // handle servers only when there is no DMX data
+  if (!isReceivingPackets) {        
+
+    //Serial.println("handle servers");
+    wifiManager.process();
+      
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!connectedToAccessPoint) {
+        Serial.println("**** CONNECTED TO ACCESS POINT! ****");  
+        ArduinoOTA.begin();
+        Serial.println("OTA restarted");
+      }
+      connectedToAccessPoint = true;
+    } 
+    
+    ArduinoOTA.handle();
+    server.handleClient();
+  }
+  
+  artnet.read();
+  if (packetReceived) {    
+    redOn();
+    redOffTime = now+5; // flash red for 10 ms
+  }
+
+  // this section gets executed at a maximum rate of around 40Hz
+  if ((millis() - tic_loop) >= config.delay) {
+    tic_loop = millis();
+    
+    totalFramesSent++;
+    framesSent++;
+
+    int strobe = 0;
+    if (strobeInterval > 0) {
+
+      int divisor = (256 - strobeInterval) / 20;
+      divisor++; // avoid division by zero
+
+      if (0 == totalFramesSent % divisor) {
+        strobe = 255;
+      }
+      for (int i = 0; i < 17 * 3; i++) {
+        global.data[i] = strobe;
+      }
+    }
+
+    sendBreak();
+    Serial1.write(0); // Start-Byte
+    // send out the value of the selected channels (up to 512)
+    for (int i = 0; i < MIN(global.length, config.channels); i++) {
+      Serial1.write(global.data[i]);
+    }
+
+    if (strobe > 0) {
+      for (int i = 0; i < 17 * 3; i++) {
+        global.data[i] = 0;
+      }
+
+      sendBreak();
+
+      Serial1.write(0); // Start-Byte
+      // send out the value of the selected channels (up to 512)
+      for (int i = 0; i < MIN(global.length, config.channels); i++) {
+        Serial1.write(global.data[i]);
+      }
+    }
+  }
+
+#ifdef ENABLE_STATS
+  if (packetReceived) {    
+    printStats(loopCount);
+  }
+#endif
+  
+  if (debugTiming) {
+    long after = millis();
+    long delta = after-now;
+    if (delta>10) {
+      Serial.print("delta=");
+      Serial.println(delta);
+    }
+  }
+
+  packetReceived = false;
+  wasReceivingPackets = isReceivingPackets;
+  
+} // loop
+
+//this will be called for each UDP packet received
+void onDmxPacket(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t * data) {
+
+  lastPacketReceived = millis();
+  packetReceived = true;
+  totalFramesReceived++;
+  framesReceived++;
+
+  if (universe == config.universe) {
+    // copy the data from the UDP packet over to the global universe buffer
+    global.universe = universe;
+    global.sequence = sequence;
+    if (length < 512)
+      global.length = length;
+    for (int i = 0; i < global.length; i++) {
+      global.data[i] = data[i];
+    }
+    strobeInterval = data[200 - 1];
+  }
+} // onDmxpacket
+
+void sendInitial() {
+  for (int n = 0; n < 3; n++) {
+    sendBreak();
+    Serial1.write(0); // Start-Byte
+    // send out the value of the selected channels (up to 256)
+    for (int i = 0; i < 256; i++) {
+      Serial1.write(global.data[i]);
+    }
+    delay(1);
+  }
+}
+
+void setupServer() {
   // this serves all URIs that can be resolved to a file on the SPIFFS filesystem
   server.onNotFound(handleNotFound);
 
   server.on("/", HTTP_GET, []() {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /");
     handleRedirect("/index");
+    redOffTime = millis()+50;
   });
 
   server.on("/index", HTTP_GET, []() {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /index");
     handleStaticFile("/index.html");
+    redOffTime = millis()+50;
   });
 
   server.on("/defaults", HTTP_GET, []() {
     tic_web = millis();
-    Serial.println("handleDefaults");
+    redOn();
+    Serial.println("GET /defaults");
     handleStaticFile("/reload_success.html");
     delay(2000);
     singleRed();
@@ -254,12 +426,14 @@ void setup() {
     WiFiManager wifiManager;
     wifiManager.resetSettings();
     WiFi.hostname(host);
+    redOff();
     ESP.restart();
   });
 
   server.on("/reconnect", HTTP_GET, []() {
     tic_web = millis();
-    Serial.println("handleReconnect");
+    redOn();
+    Serial.println("GET /reconnect");
     handleStaticFile("/reload_success.html");
     delay(2000);
     singleRed();
@@ -267,14 +441,16 @@ void setup() {
     wifiManager.setAPStaticIPConfig(IPAddress(192, 168, 1, 1), IPAddress(192, 168, 1, 1), IPAddress(255, 255, 255, 0));
     wifiManager.startConfigPortal(host);
     Serial.println("connected");
-    if (WiFi.status() == WL_CONNECTED)
+    if (WiFi.status() == WL_CONNECTED) {
       singleGreen();
+    }
+    redOffTime = millis()+50;
   });
 
   server.on("/reset", HTTP_GET, []() {
     tic_web = millis();
-    Serial.println("handleReset");
-    handleStaticFile("/reload_success.html");
+    Serial.println("/reset");
+    handleStaticFile("GET /reload_success.html");
     delay(2000);
     singleRed();
     ESP.restart();
@@ -282,36 +458,56 @@ void setup() {
 
   server.on("/monitor", HTTP_GET, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /monitor");
     handleStaticFile("/monitor.html");
+    redOffTime = millis()+50;
   });
 
   server.on("/hello", HTTP_GET, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /hello");
     handleStaticFile("/hello.html");
+    redOffTime = millis()+50;
   });
 
   server.on("/settings", HTTP_GET, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /settings");
     handleStaticFile("/settings.html");
+    redOffTime = millis()+50;
   });
 
   server.on("/dir", HTTP_GET, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /dir");
     handleDirList();
+    redOffTime = millis()+50;
   });
 
   server.on("/json", HTTP_PUT, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("PUT /json");
     handleJSON();
+    redOffTime = millis()+50;
   });
 
   server.on("/json", HTTP_POST, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("POST /json");
     handleJSON();
+    redOffTime = millis()+50;
   });
 
   server.on("/json", HTTP_GET, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /json");
     DynamicJsonDocument root(300);
     CONFIG_TO_JSON(universe, "universe");
     CONFIG_TO_JSON(channels, "channels");
@@ -324,243 +520,144 @@ void setup() {
     String str;
     serializeJson(root, str);
     server.send(200, "application/json", str);
+    redOffTime = millis()+50;
   });
 
   server.on("/update", HTTP_GET, [] {
     tic_web = millis();
+    redOn();
+    Serial.println("GET /update");
     handleStaticFile("/update.html");
+    redOffTime = millis()+50;
+  });
+
+  server.on("/favicon.ico", HTTP_GET, [] {
+    tic_web = millis();
+    redOn();
+    Serial.println("GET /favicon.ico");
+    handleStaticFile("/favicon.ico");
+    redOffTime = millis()+50;
+  });
+
+  server.on("/logo.png", HTTP_GET, [] {
+    tic_web = millis();
+    redOn();
+    Serial.println("GET /logo.png");
+    handleStaticFile("/logo.png");
+    redOffTime = millis()+50;
   });
 
   server.on("/update", HTTP_POST, handleUpdate1, handleUpdate2);
-
+  
   // start the web server
-  server.begin();
-#endif
+  Serial.println("Starting web interface");
+  server.begin();  
+  Serial.println("Web interface started");
+}
 
-  // announce the hostname and web server through zeroconf
-#ifdef ENABLE_MDNS
-  MDNS.begin(host);
-  MDNS.addService("http", "tcp", 80);
-#endif
-
-  artnet.begin();
-  artnet.setArtDmxCallback(onDmxPacket);
-  Serial.println("artnet started");
-
-  // initialize all timers
-  tic_loop   = millis();
-  tic_packet = millis();
-  tic_fps    = millis();
-  tic_web    = 0;
-
-  Serial.println("setup done");
-} // setup
-
-
-int loops = 0;
-boolean firstConnect = true;
-boolean handleServer = true;
-
-long lastLoop = millis();
-
-void loop() {
-
-  long currLoop = millis();
-  long loopDelta = currLoop-lastLoop;
-  if (loopDelta>8) {
-    Serial.print("loopDelta=");
-    Serial.println(loopDelta);
+void printStats(long loopCount) {
+  long now = millis();
+  long delta = now - tic_fps;
+  // every 5 seconds
+  if (delta > 10000) {
+    Serial.print("now=");
+    Serial.print(now);
+    Serial.print(",delta=");
+    Serial.print(delta);
+    Serial.print(",loopCount=");
+    Serial.print(loopCount);
+    Serial.print(",totalFramesSent=");
+    Serial.print(totalFramesSent);
+    Serial.print(",framesSent=");
+    Serial.print(framesSent);
+    Serial.print(",totalFramesReceived=");
+    Serial.print(totalFramesReceived);
+    Serial.print(",framesReceived=");
+    Serial.print(framesReceived);
+    Serial.print(",strobeInterval=");
+    Serial.print(strobeInterval);
+    Serial.print(",packetReceived=");
+    Serial.print(packetReceived);
+    // don't estimate the FPS too frequently
+    fps_in  = 1000 * framesReceived / delta;
+    fps_out = 1000 * framesSent / delta;
+    tic_fps = millis();
+    framesReceived = 0;
+    framesSent = 0;
+    Serial.print(",fps_in=");
+    Serial.print(fps_in);
+    Serial.print(",fps_out=");
+    Serial.print(fps_out);
+    Serial.println();
   }
-  lastLoop = currLoop;
-
-  long t0 = millis();
-  
-  allBlack();
-
-  boolean connected = false;
-  if (handleServer) {        
-    
-    wifiManager.process();
-  
-    if (WiFi.status() == WL_CONNECTED) {
-      connected = true;
-      if (firstConnect) {
-        Serial.println("**** CONNECTED! ****");  
-      }
-      firstConnect = false;
-    } 
-    
-    ArduinoOTA.handle();
-    server.handleClient();
-  }
-
-  loops++;
-  
-  //else  
-  // execute always (when device is working as a standalone access point)
-  {
-    artnet.read();
-
-    // this section gets executed at a maximum rate of around 40Hz
-    if ((millis() - tic_loop) >= config.delay) {
-      tic_loop = millis();
-      
-      totalFramesSent++;
-      framesSent++;
-
-      int strobe = 0;
-      if (strobeInterval > 0) {
-
-        int divisor = (256 - strobeInterval) / 20;
-        divisor++; // avoid division by zero
-
-        if (0 == totalFramesSent % divisor) {
-          strobe = 255;
-        }
-        for (int i = 0; i < 17 * 3; i++) {
-          global.data[i] = strobe;
-        }
-      }
-
-      sendBreak();
-
-      Serial1.write(0); // Start-Byte
-      // send out the value of the selected channels (up to 512)
-      for (int i = 0; i < MIN(global.length, config.channels); i++) {
-        Serial1.write(global.data[i]);
-      }
-
-      if (strobe > 0) {
-        for (int i = 0; i < 17 * 3; i++) {
-          global.data[i] = 0;
-        }
-
-        sendBreak();
-
-        Serial1.write(0); // Start-Byte
-        // send out the value of the selected channels (up to 512)
-        for (int i = 0; i < MIN(global.length, config.channels); i++) {
-          Serial1.write(global.data[i]);
-        }
-      }
-
-    }
-  }
-
-  if (packetReceived) {    
-    printStats();
-
-    if (handleServer) {
-      Serial.println("First DMX packet received. Stop handling server");
-      handleServer = false;
-
-      server.stop();
-      //wifiManager.stopWebPortal();
-      //wifiManager.stopConfigPortal();
-    }
-    if (connected) {
-      singleBlue();
-    } else {
-      singleYellow();
-    }
-  }
-  delay(1);
-  packetReceived = false;
-
-  long t1 = millis();
-  long delta = t1-t0;
-  if (delta>10) {
-    Serial.print("delta=");
-    Serial.println(delta);
-  }
-  
-} // loop
-
+} 
 
 #ifdef COMMON_ANODE
-
-void singleRed() {
-  digitalWrite(LED_R, LOW);
-  digitalWrite(LED_G, HIGH);
-  digitalWrite(LED_B, HIGH);
-}
-
-void singleGreen() {
-  digitalWrite(LED_R, HIGH);
-  digitalWrite(LED_G, LOW);
-  digitalWrite(LED_B, HIGH);
-}
-
-void singleBlue() {
-  digitalWrite(LED_R, HIGH);
-  digitalWrite(LED_G, HIGH);
-  digitalWrite(LED_B, LOW);
-}
-
-void singleYellow() {
-  digitalWrite(LED_R, LOW);
-  digitalWrite(LED_G, LOW);
-  digitalWrite(LED_B, HIGH);
-}
-
-void allBlack() {
-  digitalWrite(LED_R, HIGH);
-  digitalWrite(LED_G, HIGH);
-  digitalWrite(LED_B, HIGH);
-}
-
-#else
+#define ON  LOW
+#define OFF HIGH
+#define DIMMED 4095-100
+#else 
+#define ON  HIGH
+#define OFF LOW
+#define DIMMED 100
+#endif
 
 void singleWhite() {
-  digitalWrite(LED_R, HIGH);
-  digitalWrite(LED_G, HIGH);
-  digitalWrite(LED_B, HIGH);
+  digitalWrite(LED_R, ON);
+  digitalWrite(LED_G, ON);
+  digitalWrite(LED_B, ON);
 }
 
 void singleRed() {
-  digitalWrite(LED_R, HIGH);
+  digitalWrite(LED_R, ON);
   digitalWrite(LED_G, LOW);
   digitalWrite(LED_B, LOW);
 }
 
 void redOn() {
-  digitalWrite(LED_R, HIGH);
-}
-
-void redOff() {
-  digitalWrite(LED_R, HIGH);
+  digitalWrite(LED_R, ON);
 }
 
 void greenOn() {
-  digitalWrite(LED_G, HIGH);
+  analogWrite(LED_G, DIMMED);
+}
+
+void blueOn() {
+  analogWrite(LED_B, DIMMED);
+}
+
+void redOff() {
+  digitalWrite(LED_R, OFF);
 }
 
 void greenOff() {
-  digitalWrite(LED_G, HIGH);
+  digitalWrite(LED_G, OFF);
+}
+
+void blueOff() {
+  digitalWrite(LED_B, OFF);
 }
 
 void singleGreen() {
-  digitalWrite(LED_R, LOW);
-  digitalWrite(LED_G, HIGH);
-  digitalWrite(LED_B, LOW);
+  digitalWrite(LED_R, OFF);
+  digitalWrite(LED_G, ON);
+  digitalWrite(LED_B, OFF);
 }
 
 void singleBlue() {
-  digitalWrite(LED_R, LOW);
-  digitalWrite(LED_G, LOW);
-  digitalWrite(LED_B, HIGH);
+  digitalWrite(LED_R, OFF);
+  digitalWrite(LED_G, OFF);
+  digitalWrite(LED_B, ON);
 }
 
 void singleYellow() {
-  digitalWrite(LED_R, HIGH);
-  digitalWrite(LED_G, HIGH);
-  digitalWrite(LED_B, LOW);
+  digitalWrite(LED_R, ON);
+  digitalWrite(LED_G, ON);
+  digitalWrite(LED_B, OFF);
 }
 
 void allBlack() {
-  digitalWrite(LED_R, LOW);
-  digitalWrite(LED_G, LOW);
-  digitalWrite(LED_B, LOW);
+  digitalWrite(LED_R, OFF);
+  digitalWrite(LED_G, OFF);
+  digitalWrite(LED_B, OFF);
 }
-
-#endif

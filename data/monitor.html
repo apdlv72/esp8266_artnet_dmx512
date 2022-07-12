@@ -3,7 +3,13 @@
 <head>
 <title>Monitor</title>
 <meta charset="utf-8">
-<link href="style.css" rel="stylesheet" type="text/css">
+<style>
+body{ 
+    font-family: sans-serif;
+    background-color: #101010; 
+    color: #808080;
+}
+</style>
 <script language="javascript" type="text/javascript" src="jquery-3.1.1.min.js"></script>
 </head>
 
@@ -23,7 +29,33 @@ Packets received:
 Frames per second:
 <div id="fps" name="fps">?</div>
 
-<script language="javascript" type="text/javascript" src="monitor.js"></script>
+<script>
+jQuery( document ).ready(function( $ ) {
+  $(document).ready( updateDiv );
+});
+
+// update the content of div elements
+function updateDiv() {
+$.getJSON( "json", function() {
+  //alert( "success" );
+})
+  .done(function(data) {
+    console.log(data);
+    $.each(data, function(key, value) {
+      elem = document.getElementById(key);
+      if (elem)
+        elem.innerHTML = value;
+    });
+    //alert( "done" );
+  })
+  .fail(function() {
+    //alert( "error" );
+  })
+  .always(function() {
+    //alert( "finished" );
+  });
+}
+</script>
 
 </body>
 </html>
