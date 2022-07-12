@@ -15,7 +15,9 @@ body{
 
 <body>
 
+<center>
 <h1>Monitor</h1>
+
 
 Firmware version:
 <div id="version" name="version">?</div>
@@ -23,11 +25,19 @@ Firmware version:
 Uptime:
 <div id="uptime" name"uptime">?</div>
 
-Packets received:
+Total packets received:
 <div id="packets" name="packets">?</div>
 
+Total frames sent:
+<div id="frames" name="frames">?</div>
+
+Packets per second:
+<div id="pps_in" name="pps_in">?</div>
+
 Frames per second:
-<div id="fps" name="fps">?</div>
+<div id="fps_out" name="fps_out">?</div>
+
+</center>
 
 <script>
 jQuery( document ).ready(function( $ ) {

@@ -37,7 +37,6 @@ bool initialConfig() {
 }
 
 bool loadConfig() {
-  Serial.println("loadConfig");
 
   File configFile = SPIFFS.open("/config.json", "r");
   if (!configFile) {

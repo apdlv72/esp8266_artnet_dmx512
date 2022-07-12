@@ -42,11 +42,11 @@
 
 
 Config config;
-const char* host = "😎ArtNet😍";
+const char* host = "😎ArtNet " __DATE__ "😍";
 const char* version = __DATE__ " / " __TIME__;
 
-unsigned long totalFramesReceived = 0;
-unsigned long framesReceived = 0;
+unsigned long totalPacketsReceived = 0;
+unsigned long packetsReceived = 0;
 
 unsigned long totalFramesSent = 0;
 unsigned long framesSent = 0;
@@ -64,7 +64,7 @@ long tic_loop = 0;
 long tic_fps = 0;
 long tic_packet = 0;
 long tic_web = 0;
-float fps_in;
+float pps_in;
 float fps_out;
 
 long loopCount = 0;
@@ -138,6 +138,7 @@ void setup() {
   if (loadConfig()) {
     Serial.println("Successfully loaded initial configuration");
     Serial.print("Configured FPS delay is ");
+    Serial.print(config.delay);
     Serial.println(" ms");
     singleYellow();
   } else {
@@ -157,7 +158,7 @@ void setup() {
 
   int CONFIG_TIMEOUT = 24 * 3600; // 1 day
   
-  Serial.println("starting WiFiManager");
+  Serial.println("Starting WiFiManager");
   wifiManager.setDarkMode(true);
   wifiManager.setConfigPortalBlocking(false);
   wifiManager.setConfigPortalTimeout(CONFIG_TIMEOUT);
@@ -366,8 +367,8 @@ void onDmxPacket(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t *
 
   lastPacketReceived = millis();
   packetReceived = true;
-  totalFramesReceived++;
-  framesReceived++;
+  totalPacketsReceived++;
+  packetsReceived++;
 
   if (universe == config.universe) {
     // copy the data from the UDP packet over to the global universe buffer
@@ -514,9 +515,10 @@ void setupServer() {
     CONFIG_TO_JSON(delay, "delay");
     root["version"] = version;
     root["uptime"]  = long(millis() / 1000);
-    root["packets"] = framesReceived;
+    root["packets"] = totalPacketsReceived;
+    root["frames"]  = totalFramesSent;
+    root["pps_in"]  = pps_in;
     root["fps_out"] = fps_out;
-    root["fps_in"] = fps_in;
     String str;
     serializeJson(root, str);
     server.send(200, "application/json", str);
@@ -570,22 +572,22 @@ void printStats(long loopCount) {
     Serial.print(totalFramesSent);
     Serial.print(",framesSent=");
     Serial.print(framesSent);
-    Serial.print(",totalFramesReceived=");
-    Serial.print(totalFramesReceived);
-    Serial.print(",framesReceived=");
-    Serial.print(framesReceived);
+    Serial.print(",totalPacketsReceived=");
+    Serial.print(totalPacketsReceived);
+    Serial.print(",packetsReceived=");
+    Serial.print(packetsReceived);
     Serial.print(",strobeInterval=");
     Serial.print(strobeInterval);
     Serial.print(",packetReceived=");
     Serial.print(packetReceived);
     // don't estimate the FPS too frequently
-    fps_in  = 1000 * framesReceived / delta;
+    pps_in  = 1000 * packetsReceived / delta;
     fps_out = 1000 * framesSent / delta;
     tic_fps = millis();
-    framesReceived = 0;
+    packetsReceived = 0;
     framesSent = 0;
-    Serial.print(",fps_in=");
-    Serial.print(fps_in);
+    Serial.print(",pps_in=");
+    Serial.print(pps_in);
     Serial.print(",fps_out=");
     Serial.print(fps_out);
     Serial.println();
