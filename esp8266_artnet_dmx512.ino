@@ -1,3 +1,4 @@
+
 /*
   This sketch receives Art-Net data of one DMX universes over WiFi
   and sends it over the serial interface to a MAX485 module.
@@ -23,7 +24,7 @@
 #define ENABLE_OTA
 #define ENABLE_MDNS
 #define ENABLE_WEBINTERFACE
-//#define ENABLE_STATS
+#define ENABLE_STATS
 
 #define LED_B 16  // GPIO16/D0
 #define LED_G 5   // GPIO05/D1
@@ -40,9 +41,8 @@
 #define DIMMED 100
 #endif
 
-
-Config config;
-const char* host = "😎ArtNet " __DATE__ "😍";
+//const char* host = "😎ArtNet " __DATE__ "😍";
+const char* host = "🎂 Tommy 🥳";
 const char* version = __DATE__ " / " __TIME__;
 
 unsigned long totalPacketsReceived = 0;
@@ -80,6 +80,7 @@ volatile byte strobeInterval = 0;
 volatile boolean packetReceived = false;
 volatile long lastPacketReceived = 0;
 
+Config config;
 ESP8266WebServer server(80);
 ArtnetWifi artnet;
 WiFiManager wifiManager;
@@ -156,7 +157,7 @@ void setup() {
   delay(250);
   allBlack();
 
-  int CONFIG_TIMEOUT = 24 * 3600; // 1 day
+  int CONFIG_TIMEOUT = 7 * 24 * 3600; // 1 week
   
   Serial.println("Starting WiFiManager");
   wifiManager.setDarkMode(true);
@@ -299,6 +300,12 @@ void loop() {
   artnet.read();
   if (packetReceived) {    
     redOn();
+//    for (int i=0; i<512; i++) {
+//      if (global.data[i]>0) {
+//        Serial.print("recv "); Serial.print(i);
+//        Serial.print(" value "); Serial.println(global.data[i]);
+//      }
+//    }
     redOffTime = now+3; // flash red for 10 ms
   }
 
@@ -309,19 +316,26 @@ void loop() {
     totalFramesSent++;
     framesSent++;
 
-    int strobe = 0;
+    bool clearStrobe = false;
     if (strobeInterval > 0) {
 
       int divisor = (256 - strobeInterval) / 20;
-      divisor++; // avoid division by zero
+      divisor++; // avoid division by zero      
 
       if (0 == totalFramesSent % divisor) {
-        strobe = 255;
-      }
-      for (int i = 0; i < 17 * 3; i++) {
-        global.data[i] = strobe;
+        // set the original values below, then clear immediately after
+        clearStrobe = true;
+      } else {
+        blankStrobeChannels();
       }
     }
+
+//    for (int i=0; i<512; i++) {
+//      if (global.data[i]>0) {
+//        Serial.print("send "); Serial.print(i);
+//        Serial.print(" value "); Serial.println(global.data[i]);
+//      }
+//    }
 
     sendBreak();
     Serial1.write(0); // Start-Byte
@@ -330,13 +344,9 @@ void loop() {
       Serial1.write(global.data[i]);
     }
 
-    if (strobe > 0) {
-      for (int i = 0; i < 17 * 3; i++) {
-        global.data[i] = 0;
-      }
-
+    if (clearStrobe) {
+      blankStrobeChannels();
       sendBreak();
-
       Serial1.write(0); // Start-Byte
       // send out the value of the selected channels (up to 512)
       for (int i = 0; i < MIN(global.length, config.channels); i++) {
@@ -362,6 +372,19 @@ void loop() {
   wasReceivingPackets = isReceivingPackets;
   
 } // loop
+
+void blankStrobeChannels() {
+      // 9 ceiling lamps with RGB 
+      for (int i = 0; i < 9 * 3; i++) {
+        global.data[i] = 0;
+      }
+
+      // the RGBW array's master dimmers:
+      global.data[63 + 0*8] = 0;
+      global.data[63 + 1*8] = 0;
+      global.data[63 + 2*8] = 0;
+      global.data[63 + 3*8] = 0;  
+}
 
 //this will be called for each UDP packet received
 void onDmxPacket(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t * data) {

@@ -32,7 +32,7 @@ static String getContentType(const String& path) {
 bool initialConfig() {
   config.universe = 0;
   config.channels = 256;
-  config.delay = 25;
+  config.delay = 20;
   return true;
 }
 
